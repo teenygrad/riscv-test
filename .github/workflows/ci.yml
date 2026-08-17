@@ -15,3 +15,8 @@ jobs:
         runs-on: [ubuntu-24.04-riscv]
     steps:
       - run: echo "hello from $(uname -m)"
+      - uses: actions/checkout@v4
+      - name: Build cpucaps
+        run: gcc -O2 -Wall -o cpucaps cpucaps.c
+      - name: Run cpucaps
+        run: ./cpucaps
