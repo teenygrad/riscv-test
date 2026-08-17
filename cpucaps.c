@@ -7,6 +7,14 @@
  *   - riscv_hwprobe(2)      for vendor/arch/imp IDs and extension flags
  *                           (Linux >= 6.4, syscall 258 on riscv)
  *   - /proc/cpuinfo         raw dump as a human-readable fallback
+ *   - SIGILL trap probe     executes a raw vsetvli opcode and catches the
+ *                           illegal-instruction trap if V isn't implemented;
+ *                           reads vlenb (CSR 0xC22) on success for VLEN.
+ *                           Works even on kernels too old for hwprobe.
+ *
+ * Note on "matrix" extensions: RISC-V's Matrix extension is still an
+ * unratified draft with no standardized opcode/CSR and no toolchain/kernel
+ * support, so there's nothing generic to probe for it here.
  *
  * Build:  gcc -O2 -o cpucaps cpucaps.c
  * Run:    ./cpucaps
@@ -15,6 +23,8 @@
 #include <stdio.h>
 #include <stdint.h>
 #include <string.h>
+#include <signal.h>
+#include <setjmp.h>
 #include <unistd.h>
 #include <sys/auxv.h>
 #include <sys/syscall.h>
@@ -122,6 +132,48 @@ static void print_hwprobe(void)
 	printf("misaligned access perf: %s\n", perf);
 }
 
+static sigjmp_buf rvv_jmpbuf;
+
+static void rvv_sigill_handler(int sig)
+{
+	(void)sig;
+	siglongjmp(rvv_jmpbuf, 1);
+}
+
+/* Direct hardware probe for the V (vector) extension, independent of what
+ * the kernel's ISA string or hwprobe() claims. Opcode 0x57 is the OP-V
+ * major opcode, reserved solely for vector instructions in the base ISA,
+ * so any hart without V *must* raise an illegal-instruction exception on
+ * it. We execute the raw encoding for "vsetvli x0, x0, e8, m1, tu, mu"
+ * (all-zero vtype immediate) and catch SIGILL if it traps. */
+static void print_rvv_probe(void)
+{
+#ifdef __riscv
+	struct sigaction sa, old_sa;
+
+	memset(&sa, 0, sizeof(sa));
+	sa.sa_handler = rvv_sigill_handler;
+	sigemptyset(&sa.sa_mask);
+	sigaction(SIGILL, &sa, &old_sa);
+
+	if (sigsetjmp(rvv_jmpbuf, 1) == 0) {
+		unsigned long vlenb;
+
+		asm volatile (".word 0x00007057\n\t" ::: "memory"); /* vsetvli */
+		asm volatile ("csrr %0, 0xC22" : "=r"(vlenb));       /* vlenb */
+
+		printf("RVV (vector): supported, VLEN = %lu bits (vlenb=%lu bytes)\n",
+		       vlenb * 8, vlenb);
+	} else {
+		printf("RVV (vector): not supported (SIGILL trap on vsetvli)\n");
+	}
+
+	sigaction(SIGILL, &old_sa, NULL);
+#else
+	printf("RVV (vector): probe skipped (not built for riscv)\n");
+#endif
+}
+
 static void print_cpuinfo(void)
 {
 	FILE *f = fopen("/proc/cpuinfo", "r");
@@ -151,6 +203,11 @@ int main(void)
 	putchar('\n');
 	printf("=== riscv_hwprobe(2) ===\n");
 	print_hwprobe();
+
+	putchar('\n');
+	printf("=== RVV runtime probe ===\n");
+	print_rvv_probe();
+	printf("Matrix extension: not probed (unratified draft, no standard opcode/CSR)\n");
 
 	putchar('\n');
 	printf("=== /proc/cpuinfo ===\n");
