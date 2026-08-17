@@ -20,3 +20,9 @@ jobs:
         run: gcc -O2 -Wall -o cpucaps cpucaps.c
       - name: Run cpucaps
         run: ./cpucaps
+      - name: Install QEMU user-mode + clang
+        run: sudo apt-get update -y && sudo apt-get install -y qemu-user clang
+      - name: Build rvv_add (clang, -march=rv64gcv)
+        run: clang -O2 -march=rv64gcv -o rvv_add rvv_add.c
+      - name: Run rvv_add under QEMU (vector emulated, VLEN=256)
+        run: qemu-riscv64 -cpu rv64,v=true,vlen=256,vext_spec=v1.0 ./rvv_add
